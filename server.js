@@ -11,6 +11,10 @@ const PORT = process.env.PORT || 3000;
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/waha_whatsapp';
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY;
+const WAHA_BASE_URL = process.env.WAHA_BASE_URL;
+const WAHA_API_KEY = process.env.WAHA_API_KEY;
+const WAHA_SESSION = process.env.WAHA_SESSION || 'default';
+
 
 // Security Middlewares
 app.use(helmet()); // Sets secure HTTP headers
@@ -206,6 +210,54 @@ const extractMessageText = (payload) => {
   );
 };
 
+// Helper to send a WhatsApp message via WAHA HTTP API
+const sendWhatsAppMessage = async (phoneOrChatId, text) => {
+  if (!WAHA_BASE_URL) {
+    console.warn('⚠️ WAHA_BASE_URL is not set in environment variables. Cannot send WhatsApp reply.');
+    return false;
+  }
+
+  // Ensure chatId has @c.us suffix
+  let chatId = String(phoneOrChatId).trim();
+  if (!chatId.includes('@')) {
+    chatId = `${chatId.replace(/[^0-9]/g, '')}@c.us`;
+  }
+
+  // Clean baseUrl by removing trailing slashes and /dashboard if user provided dashboard URL
+  const cleanBaseUrl = String(WAHA_BASE_URL).replace(/\/dashboard\/?$/i, '').replace(/\/+$/, '');
+  const endpoint = `${cleanBaseUrl}/api/sendText`;
+  const headers = {
+    'Content-Type': 'application/json',
+  };
+  if (WAHA_API_KEY) {
+    headers['X-Api-Key'] = WAHA_API_KEY;
+  }
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        session: WAHA_SESSION,
+        chatId,
+        text,
+      }),
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (response.ok) {
+      console.log(`📤 [WAHA Auto-Reply] Sent to ${chatId}: "${text}"`);
+      return true;
+    } else {
+      console.error(`❌ [WAHA Auto-Reply Failed] Status ${response.status}:`, data);
+      return false;
+    }
+  } catch (error) {
+    console.error('❌ [WAHA Send Request Error]:', error.message);
+    return false;
+  }
+};
+
 // 3. Webhook POST Endpoint - Receives messages from WAHA (Protected with Rate Limit & Webhook Secret)
 app.post(['/webhook', '/api/webhook'], webhookLimiter, verifyWebhookSecret, async (req, res) => {
   // Acknowledge receipt to WAHA immediately
@@ -251,6 +303,36 @@ app.post(['/webhook', '/api/webhook'], webhookLimiter, verifyWebhookSecret, asyn
     } else {
       console.warn('⚠️ MongoDB is not connected yet.');
     }
+
+    // -------------------------------------------------------------
+    // CUSTOM AUTO-REPLY LOGIC:
+    // Sirf "hi", "hii", "hello", "hey" ka jawab dega, baki kisi ka nahi!
+    // -------------------------------------------------------------
+    if (!fromMe && message) {
+      const cleanMsg = message.trim().toLowerCase();
+      // Check if message is 'hi', 'hii', 'hiii', 'hello', or 'hey'
+      const isHi = /^(hi+|hello|hey)$/i.test(cleanMsg);
+
+      if (isHi) {
+        console.log(`🎯 Custom trigger matched ("${cleanMsg}"). Sending bot reply with portfolio to ${senderPhone}...`);
+
+        const greetingName = senderName ? `${senderName}` : 'Dost';
+        const replyText = 
+`Hello ${greetingName}! 👋
+
+Main *Suraj ka Bot* hoon 🤖
+I give you a reply for *Hi* messages only! 😉
+
+Suraj ke baare me aur jaanne ya unka work dekhne ke liye portfolio check karein:
+🌐 *Portfolio:* https://suraj-swarnkar.onrender.com/
+
+Aapka message Suraj tak pahuch gaya hai, wo aapse jald hi yahan connect karenge! ✨`;
+
+        await sendWhatsAppMessage(senderPhone, replyText);
+      } else {
+        console.log(`ℹ️ Message is "${cleanMsg}" (Not a 'hi'). No auto-reply sent.`);
+      }
+    }
   } catch (error) {
     console.error('❌ Error processing WAHA webhook event:', error.message);
   }
@@ -291,7 +373,28 @@ app.get(['/messages', '/api/messages'], verifyAdminKey, async (req, res) => {
   }
 });
 
-// 5. 404 handler
+// 5. Send Message API (Manual reply / outbound message via WAHA)
+app.post(['/send-message', '/api/send-message'], verifyAdminKey, async (req, res) => {
+  const { phone, message } = req.body || {};
+  if (!phone || !message) {
+    return res.status(400).json({
+      success: false,
+      error: 'Both "phone" and "message" are required in request body.',
+    });
+  }
+
+  const sent = await sendWhatsAppMessage(phone, message);
+  if (sent) {
+    return res.json({ success: true, message: `Message sent successfully to ${phone}` });
+  } else {
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to send message via WAHA. Please verify WAHA_BASE_URL.',
+    });
+  }
+});
+
+// 6. 404 handler
 app.use((req, res) => {
   res.status(404).json({ error: 'Route not found' });
 });
