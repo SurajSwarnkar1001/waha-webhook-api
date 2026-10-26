@@ -17,6 +17,20 @@ const ADMIN_API_KEY = process.env.ADMIN_API_KEY;
 const WAHA_BASE_URL = process.env.WAHA_BASE_URL;
 const WAHA_API_KEY = process.env.WAHA_API_KEY;
 const WAHA_SESSION = process.env.WAHA_SESSION || 'default';
+// Auto-reply cooldown per user (Default: 10 minutes to prevent spam loops)
+const AUTO_REPLY_COOLDOWN_MINUTES = parseInt(process.env.AUTO_REPLY_COOLDOWN_MINUTES, 10) || 10;
+const userReplyCooldowns = new Map();
+
+// Periodic cleanup of expired cooldown entries every 30 minutes
+setInterval(() => {
+  const cutoff = Date.now() - (AUTO_REPLY_COOLDOWN_MINUTES * 60 * 1000);
+  for (const [phone, timestamp] of userReplyCooldowns.entries()) {
+    if (timestamp < cutoff) {
+      userReplyCooldowns.delete(phone);
+    }
+  }
+}, 30 * 60 * 1000);
+
 
 
 // Security Middlewares
@@ -317,10 +331,19 @@ app.post(['/webhook', '/api/webhook'], webhookLimiter, verifyWebhookSecret, asyn
       const isHi = /^(hi+|hello|hey)$/i.test(cleanMsg);
 
       if (isHi) {
-        console.log(`🎯 Custom trigger matched ("${cleanMsg}"). Sending bot reply with portfolio to ${senderPhone}...`);
+        const now = Date.now();
+        const cooldownMs = AUTO_REPLY_COOLDOWN_MINUTES * 60 * 1000;
+        const lastRepliedAt = userReplyCooldowns.get(senderPhone);
 
-        const greetingName = senderName ? `${senderName}` : 'Dost';
-        const replyText = 
+        // Check if user is currently inside the cooldown window
+        if (lastRepliedAt && (now - lastRepliedAt < cooldownMs)) {
+          const remainingSec = Math.ceil((cooldownMs - (now - lastRepliedAt)) / 1000);
+          console.log(`⏳ [Cooldown Active] User ${senderPhone} already received a reply recently. Skipping duplicate reply (${remainingSec}s remaining).`);
+        } else {
+          console.log(`🎯 Custom trigger matched ("${cleanMsg}"). Sending bot reply with portfolio to ${senderPhone}...`);
+
+          const greetingName = senderName ? `${senderName}` : 'Dost';
+          const replyText = 
 `Hello ${greetingName}! 👋
 
 Main *Suraj ka Bot* hoon 🤖
@@ -331,7 +354,13 @@ Suraj ke baare me aur jaanne ya unka work dekhne ke liye portfolio check karein:
 
 Aapka message Suraj tak pahuch gaya hai, wo aapse jald hi yahan connect karenge! ✨`;
 
-        await sendWhatsAppMessage(senderPhone, replyText);
+          const sent = await sendWhatsAppMessage(senderPhone, replyText);
+          if (sent) {
+            // Update cooldown timestamp for this user
+            userReplyCooldowns.set(senderPhone, now);
+            console.log(`⏱️ Cooldown set for ${senderPhone} (${AUTO_REPLY_COOLDOWN_MINUTES} minutes).`);
+          }
+        }
       } else {
         console.log(`ℹ️ Message is "${cleanMsg}" (Not a 'hi'). No auto-reply sent.`);
       }

@@ -178,8 +178,12 @@ The webhook includes intelligent auto-reply logic tailored for Suraj's personal 
 
      Aapka message Suraj tak pahuch gaya hai, wo aapse jald hi yahan connect karenge! ✨
      ```
-3. **Behavior on Other Messages**:
+3. **Anti-Spam Cooldown Protection**:
+   - If a user sends multiple greetings consecutively (e.g. `"Hi"`, `"Hii"` 5 times in a row), the bot replies **only once**.
+   - A **10-minute cooldown** (`AUTO_REPLY_COOLDOWN_MINUTES`) is placed on that sender's number. Duplicate greeting messages within this window are safely saved in MongoDB, but duplicate replies are suppressed.
+4. **Behavior on Other Messages**:
    - If the user sends anything else (e.g., "what is the price", "call me", etc.), the message is safely stored in MongoDB, and **no automatic reply is dispatched**.
+
 
 ---
 
