@@ -94,59 +94,80 @@ app.get(['/webhook', '/api/webhook'], (req, res) => {
   });
 });
 
-// 3. Webhook POST Endpoint - Receives messages & events from WAHA
+// Helper to extract clean phone number
+const extractPhone = (payload) => {
+  // 1. WhatsApp phone number in remoteJidAlt (e.g. 916204878067@s.whatsapp.net)
+  const alt = payload?._data?.key?.remoteJidAlt;
+  if (alt && typeof alt === 'string' && alt.includes('@')) {
+    return alt.split('@')[0];
+  }
+
+  // 2. Standard WhatsApp ID (e.g. 916204878067@c.us)
+  const from = payload?.from || payload?._data?.key?.remoteJid || '';
+  if (from && typeof from === 'string' && !from.endsWith('@lid') && from.includes('@')) {
+    return from.split('@')[0];
+  }
+
+  if (alt) return String(alt).replace(/[^0-9]/g, '');
+  if (from) return String(from).split('@')[0];
+  return 'unknown';
+};
+
+// Helper to extract message text
+const extractMessageText = (payload) => {
+  return (
+    payload?.body ||
+    payload?.text ||
+    payload?._data?.message?.conversation ||
+    payload?._data?.message?.extendedTextMessage?.text ||
+    ''
+  );
+};
+
+// 3. Webhook POST Endpoint - Receives messages from WAHA
 app.post(['/webhook', '/api/webhook'], async (req, res) => {
-  // Acknowledge receipt to WAHA immediately with 200 OK
-  // This prevents WAHA from retrying due to timeouts
+  // Acknowledge receipt to WAHA immediately
   res.status(200).json({ success: true, message: 'Webhook received' });
 
   try {
     const raw = req.body || {};
-
-    // WAHA usually wraps the data in: { event: "...", session: "...", payload: { ... } }
-    // Or sometimes directly passes payload depending on engine/version.
     const event = raw.event || 'message';
-    const session = raw.session || 'default';
-    const payload = raw.payload || raw;
 
-    console.log(`📩 [WAHA Webhook] Received Event: "${event}" (Session: "${session}")`);
-
-    // Extract message fields gracefully
-    const messageId = payload.id || (payload._data && payload._data.id) || null;
-    const from = payload.from || (payload._data && payload._data.from) || null;
-    const to = payload.to || (payload._data && payload._data.to) || null;
-    const fromMe = Boolean(payload.fromMe);
-    const body = payload.body || payload.text || '';
-    const hasMedia = Boolean(payload.hasMedia || payload.media);
-    const media = payload.media || null;
-    const messageTimestamp = payload.timestamp || Math.floor(Date.now() / 1000);
-
-    // Filter or log
-    if (body) {
-      console.log(`💬 Message from ${from}: "${body}"`);
-    } else if (hasMedia) {
-      console.log(`📎 Media message from ${from}`);
+    // Ignore delivery status / ack events (only save actual messages)
+    if (event === 'message.ack') {
+      return;
     }
 
-    // Save to MongoDB if database is connected
+    const payload = raw.payload || raw;
+
+    // Extract ONLY important & clean fields
+    const senderPhone = extractPhone(payload);
+    const senderName = payload?._data?.pushName || payload?.pushName || '';
+    const message = extractMessageText(payload);
+    const fromMe = Boolean(payload?.fromMe);
+    const hasMedia = Boolean(payload?.hasMedia || payload?.media);
+    const mediaUrl = payload?.media?.url || null;
+    const messageId = payload?._data?.key?.id || payload?.id || '';
+    const sentAt = payload?.timestamp ? new Date(payload.timestamp * 1000) : new Date();
+
+    console.log(`📩 [WAHA] Message from ${senderName} (${senderPhone}): "${message || '[Media]'}"`);
+
+    // Save only clean fields to MongoDB
     if (mongoose.connection.readyState === 1) {
       const savedDoc = await Message.create({
-        event,
-        session,
-        messageId,
-        from,
-        to,
+        senderPhone,
+        senderName,
+        message,
         fromMe,
-        body,
         hasMedia,
-        media,
-        messageTimestamp,
-        rawPayload: raw,
+        mediaUrl,
+        messageId,
+        sentAt,
       });
 
-      console.log(`💾 Stored message in MongoDB (Doc ID: ${savedDoc._id})`);
+      console.log(`💾 Saved in DB (ID: ${savedDoc._id})`);
     } else {
-      console.warn('⚠️ MongoDB is not connected yet. Message was not saved to DB.');
+      console.warn('⚠️ MongoDB is not connected yet.');
     }
   } catch (error) {
     console.error('❌ Error processing WAHA webhook event:', error.message);
