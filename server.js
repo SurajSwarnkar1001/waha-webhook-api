@@ -1,18 +1,93 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const mongoose = require('mongoose');
 const Message = require('./models/Message');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/waha_whatsapp';
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
+const ADMIN_API_KEY = process.env.ADMIN_API_KEY;
 
-// Middlewares
+// Security Middlewares
+app.use(helmet()); // Sets secure HTTP headers
 app.use(cors());
+
+// Rate Limiter: General routes (200 requests per 15 minutes)
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later.' },
+});
+app.use(generalLimiter);
+
+// Rate Limiter: Webhook endpoint (Allows up to 150 messages per minute from WAHA)
+const webhookLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 150,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Webhook rate limit exceeded.' },
+});
+
 // Support large payloads (in case WAHA forwards base64 audio/media)
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
+
+// -------------------------------------------------------------
+// AUTHENTICATION MIDDLEWARES
+// -------------------------------------------------------------
+
+// 1. Verify Webhook Secret (Ensures only your WAHA server can post data)
+const verifyWebhookSecret = (req, res, next) => {
+  if (!WEBHOOK_SECRET) {
+    // If user hasn't set WEBHOOK_SECRET yet, allow request with a warning
+    return next();
+  }
+
+  const incomingSecret =
+    req.headers['x-api-key'] ||
+    (req.headers['authorization'] && req.headers['authorization'].replace('Bearer ', '')) ||
+    req.query.secret;
+
+  if (incomingSecret !== WEBHOOK_SECRET) {
+    console.warn('⛔ Unauthorized webhook attempt blocked!');
+    return res.status(401).json({
+      success: false,
+      error: 'Unauthorized: Invalid or missing webhook secret token.',
+    });
+  }
+
+  next();
+};
+
+// 2. Verify Admin API Key (Ensures only you can view stored messages)
+const verifyAdminKey = (req, res, next) => {
+  if (!ADMIN_API_KEY) {
+    // If user hasn't set ADMIN_API_KEY yet, allow request with a warning
+    return next();
+  }
+
+  const incomingKey =
+    req.headers['x-api-key'] ||
+    req.query.apiKey ||
+    req.query.key;
+
+  if (incomingKey !== ADMIN_API_KEY) {
+    return res.status(401).json({
+      success: false,
+      error: 'Unauthorized: Invalid or missing admin API key. Provide ?key=YOUR_KEY or x-api-key header.',
+    });
+  }
+
+  next();
+};
+
 
 // MongoDB Connection
 let isMongoConnected = false;
@@ -124,8 +199,8 @@ const extractMessageText = (payload) => {
   );
 };
 
-// 3. Webhook POST Endpoint - Receives messages from WAHA
-app.post(['/webhook', '/api/webhook'], async (req, res) => {
+// 3. Webhook POST Endpoint - Receives messages from WAHA (Protected with Rate Limit & Webhook Secret)
+app.post(['/webhook', '/api/webhook'], webhookLimiter, verifyWebhookSecret, async (req, res) => {
   // Acknowledge receipt to WAHA immediately
   res.status(200).json({ success: true, message: 'Webhook received' });
 
@@ -174,8 +249,8 @@ app.post(['/webhook', '/api/webhook'], async (req, res) => {
   }
 });
 
-// 4. View Recent Messages Endpoint (For testing & debugging)
-app.get(['/messages', '/api/messages'], async (req, res) => {
+// 4. View Recent Messages Endpoint (Protected with Admin API Key)
+app.get(['/messages', '/api/messages'], verifyAdminKey, async (req, res) => {
   try {
     if (mongoose.connection.readyState !== 1) {
       return res.status(503).json({
