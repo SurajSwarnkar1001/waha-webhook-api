@@ -7,6 +7,9 @@ const mongoose = require('mongoose');
 const Message = require('./models/Message');
 
 const app = express();
+// Trust proxy is required for Render load balancer / reverse proxy
+app.set('trust proxy', 1);
+
 const PORT = process.env.PORT || 3000;
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/waha_whatsapp';
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
