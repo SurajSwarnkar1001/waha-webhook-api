@@ -43,11 +43,14 @@ app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 // AUTHENTICATION MIDDLEWARES
 // -------------------------------------------------------------
 
-// 1. Verify Webhook Secret (Ensures only your WAHA server can post data)
+// 1. Verify Webhook Secret (Strict: Only allow if WEBHOOK_SECRET is set on server AND matches)
 const verifyWebhookSecret = (req, res, next) => {
   if (!WEBHOOK_SECRET) {
-    // If user hasn't set WEBHOOK_SECRET yet, allow request with a warning
-    return next();
+    console.warn('⚠️ Webhook blocked: WEBHOOK_SECRET is not set in Render Environment Variables.');
+    return res.status(401).json({
+      success: false,
+      error: 'Unauthorized: WEBHOOK_SECRET is missing on the server. Please set it in Render environment.',
+    });
   }
 
   const incomingSecret =
@@ -56,7 +59,7 @@ const verifyWebhookSecret = (req, res, next) => {
     req.query.secret;
 
   if (incomingSecret !== WEBHOOK_SECRET) {
-    console.warn('⛔ Unauthorized webhook attempt blocked!');
+    console.warn('⛔ Unauthorized webhook attempt blocked! Secret did not match.');
     return res.status(401).json({
       success: false,
       error: 'Unauthorized: Invalid or missing webhook secret token.',
@@ -66,11 +69,14 @@ const verifyWebhookSecret = (req, res, next) => {
   next();
 };
 
-// 2. Verify Admin API Key (Ensures only you can view stored messages)
+// 2. Verify Admin API Key (Strict: Only allow if ADMIN_API_KEY is set on server AND matches)
 const verifyAdminKey = (req, res, next) => {
   if (!ADMIN_API_KEY) {
-    // If user hasn't set ADMIN_API_KEY yet, allow request with a warning
-    return next();
+    console.warn('⚠️ Access blocked: ADMIN_API_KEY is not set in Render Environment Variables.');
+    return res.status(401).json({
+      success: false,
+      error: 'Unauthorized: ADMIN_API_KEY is missing on the server. Please set it in Render environment.',
+    });
   }
 
   const incomingKey =
@@ -87,6 +93,7 @@ const verifyAdminKey = (req, res, next) => {
 
   next();
 };
+
 
 
 // MongoDB Connection
